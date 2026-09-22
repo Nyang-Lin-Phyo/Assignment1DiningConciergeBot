@@ -1,0 +1,48 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+aws_credentials
+credentials
+
+# IDE / editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Large source datasets / local-only data
+DOHMH_New_York_City_Restaurant_Inspection_Results_*.csv
+meta-New_York.json
+meta-New_York.json.gz
+yelp_dataset/
+
+# Old / intermediate generated datasets / School
+manhattan_restaurants_base.json
+manhattan_restaurants_1000.json
+philly_restaurants_400_test.json
+philly_restaurants_400_test*.json
+CC_Fall2026_Assignment1.pdf
+
+# Logs / caches
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Keep the final assignment dataset tracked
+!manhattan_restaurants_1000_final.json
