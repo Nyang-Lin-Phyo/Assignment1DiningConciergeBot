@@ -3,27 +3,6 @@
 Cloud Computing and Big Data — Fall 2026  
 Dining Concierge chatbot project.
 
-## Repository Structure
-
-```text
-Assignment1DiningConciergeBot/
-│
-├── README.md
-├── .gitignore
-│
-├── frontend/
-│   └── .gitkeep
-│
-├── lambda-functions/
-│   └── LF2.py
-│
-└── other-scripts/
-    ├── buildFinalManhattanDataset.py
-    ├── manhattan_restaurants_1000_final.json
-    ├── testDynamoDB.py
-    └── uploadTestRestaurants.py
-```
-
 ## Final Restaurant Dataset
 
 `manhattan_restaurants_1000_final.json` contains:
