@@ -3,11 +3,12 @@ import json
 import os
 import random
 import urllib.request
+
+from datetime import datetime, timezone
 from urllib.error import HTTPError
 
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
-from botocore.credentials import get_credentials
 
 
 # ============================================================
@@ -26,13 +27,15 @@ TABLE_NAME = os.environ.get(
     "yelp-restaurants"
 )
 
+STATE_TABLE_NAME = os.environ.get(
+    "STATE_TABLE_NAME",
+    "dining-user-state"
+)
+
 SES_FROM_EMAIL = os.environ.get(
     "SES_FROM_EMAIL"
 )
 
-# Add this environment variable after OpenSearch is created.
-# Example:
-# https://search-dining-concierge-xxxx.us-east-1.es.amazonaws.com
 OPENSEARCH_ENDPOINT = os.environ.get(
     "OPENSEARCH_ENDPOINT"
 )
@@ -52,7 +55,13 @@ dynamodb = boto3.resource(
     region_name=REGION
 )
 
+# Main restaurant table
 table = dynamodb.Table(TABLE_NAME)
+
+# Extra-credit user state table
+state_table = dynamodb.Table(
+    STATE_TABLE_NAME
+)
 
 ses = boto3.client(
     "ses",
@@ -65,6 +74,7 @@ ses = boto3.client(
 # ============================================================
 
 def get_slot(slots, name):
+
     slot = slots.get(name)
 
     if not slot:
@@ -108,7 +118,8 @@ def opensearch_request(method, path, body=None):
 
     if not OPENSEARCH_ENDPOINT:
         raise RuntimeError(
-            "OPENSEARCH_ENDPOINT environment variable is not configured."
+            "OPENSEARCH_ENDPOINT environment variable "
+            "is not configured."
         )
 
     endpoint = OPENSEARCH_ENDPOINT.rstrip("/")
@@ -123,9 +134,13 @@ def opensearch_request(method, path, body=None):
     if body is not None:
         data = json.dumps(body).encode("utf-8")
 
-    # Lambda automatically receives credentials from
+    # Lambda automatically gets credentials from
     # its execution role.
-    credentials = boto3.Session().get_credentials()
+    credentials = (
+        boto3.Session()
+        .get_credentials()
+        .get_frozen_credentials()
+    )
 
     request = AWSRequest(
         method=method,
@@ -150,21 +165,28 @@ def opensearch_request(method, path, body=None):
     )
 
     try:
+
         with urllib.request.urlopen(
             http_request,
             timeout=10
         ) as response:
 
-            response_body = response.read().decode("utf-8")
+            response_body = (
+                response.read().decode("utf-8")
+            )
 
             if not response_body:
                 return {}
 
-            return json.loads(response_body)
+            return json.loads(
+                response_body
+            )
 
     except HTTPError as e:
 
-        error_body = e.read().decode("utf-8")
+        error_body = (
+            e.read().decode("utf-8")
+        )
 
         print("OpenSearch HTTP error:")
         print(error_body)
@@ -176,19 +198,15 @@ def opensearch_request(method, path, body=None):
 # GET RESTAURANTS FROM OPENSEARCH
 # ============================================================
 
-def get_restaurant_ids(cuisine, count=3):
+def get_restaurant_ids(
+    cuisine,
+    count=3
+):
 
     print(
-        f"Searching OpenSearch for cuisine: {cuisine}"
+        f"Searching OpenSearch for cuisine: "
+        f"{cuisine}"
     )
-
-    # Elasticsearch 6.8:
-    #
-    # index = restaurants
-    # type  = Restaurant
-    #
-    # We retrieve up to 200 matching IDs and randomly
-    # select 3 in Lambda.
 
     search_body = {
         "size": 200,
@@ -209,25 +227,27 @@ def get_restaurant_ids(cuisine, count=3):
         search_body
     )
 
-    hits = result.get(
-        "hits",
-        {}
-    ).get(
-        "hits",
-        []
+    hits = (
+        result
+        .get("hits", {})
+        .get("hits", [])
     )
 
     restaurant_ids = []
 
     for hit in hits:
 
-        source = hit.get("_source", {})
+        source = hit.get(
+            "_source",
+            {}
+        )
 
         restaurant_id = source.get(
             "RestaurantID"
         )
 
         if restaurant_id:
+
             restaurant_ids.append(
                 str(restaurant_id)
             )
@@ -238,9 +258,11 @@ def get_restaurant_ids(cuisine, count=3):
     )
 
     if len(restaurant_ids) < count:
+
         raise RuntimeError(
             f"Not enough {cuisine} restaurants "
-            f"in OpenSearch. Found {len(restaurant_ids)}."
+            f"in OpenSearch. "
+            f"Found {len(restaurant_ids)}."
         )
 
     selected = random.sample(
@@ -274,7 +296,9 @@ def get_restaurants_from_dynamodb(
             }
         )
 
-        item = response.get("Item")
+        item = response.get(
+            "Item"
+        )
 
         if item:
             restaurants.append(item)
@@ -373,6 +397,7 @@ def send_email(
 ):
 
     if not SES_FROM_EMAIL:
+
         raise RuntimeError(
             "SES_FROM_EMAIL environment variable "
             "is not configured."
@@ -419,6 +444,112 @@ def send_email(
 
 
 # ============================================================
+# SAVE USER'S LAST RECOMMENDATION
+# ============================================================
+
+def save_user_state(
+    request_data,
+    restaurants
+):
+
+    email = request_data["email"]
+
+    location = request_data.get(
+        "city"
+    )
+
+    cuisine = request_data.get(
+        "cuisine"
+    )
+
+    if not email:
+        raise ValueError(
+            "Cannot save user state without email."
+        )
+
+    saved_restaurants = []
+
+    for restaurant in restaurants:
+
+        saved_restaurants.append({
+            "business_id": str(
+                restaurant.get(
+                    "business_id",
+                    ""
+                )
+            ),
+
+            "name": str(
+                restaurant.get(
+                    "name",
+                    ""
+                )
+            ),
+
+            "address": str(
+                restaurant.get(
+                    "address",
+                    ""
+                )
+            ),
+
+            "rating": str(
+                restaurant.get(
+                    "rating",
+                    ""
+                )
+            ),
+
+            "reviews": str(
+                restaurant.get(
+                    "review_count",
+                    ""
+                )
+            )
+        })
+
+    item = {
+        "email": email.strip().lower(),
+
+        "lastLocation": (
+            location.strip().lower()
+            if location
+            else ""
+        ),
+
+        "lastCuisine": (
+            cuisine.strip().lower()
+            if cuisine
+            else ""
+        ),
+
+        "lastRecommendations":
+            saved_restaurants,
+
+        "updatedAt":
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+    }
+
+    state_table.put_item(
+        Item=item
+    )
+
+    print(
+        "Saved user recommendation "
+        "to dining-user-state."
+    )
+
+    print(
+        json.dumps(
+            item,
+            indent=2
+        )
+    )
+
+
+# ============================================================
 # DELETE SQS MESSAGE
 # ============================================================
 
@@ -453,7 +584,7 @@ def lambda_handler(event, context):
     response = sqs.receive_message(
         QueueUrl=QUEUE_URL,
         MaxNumberOfMessages=1,
-        WaitTimeSeconds=10,
+        WaitTimeSeconds=2,
         VisibilityTimeout=60
     )
 
@@ -470,9 +601,9 @@ def lambda_handler(event, context):
 
         return {
             "statusCode": 200,
-            "message": "No SQS messages available"
+            "message":
+                "No SQS messages available"
         }
-
 
     message = messages[0]
 
@@ -484,7 +615,6 @@ def lambda_handler(event, context):
         "SQS Message ID:",
         message["MessageId"]
     )
-
 
     # --------------------------------------------------------
     # 2. PARSE MESSAGE BODY
@@ -504,7 +634,6 @@ def lambda_handler(event, context):
 
         raise
 
-
     print(
         "Received request:"
     )
@@ -515,7 +644,6 @@ def lambda_handler(event, context):
             indent=2
         )
     )
-
 
     # --------------------------------------------------------
     # 3. EXTRACT LEX SLOTS
@@ -542,19 +670,37 @@ def lambda_handler(event, context):
         raw_cuisine
     )
 
-
-    request_data = {
-        "city": get_slot(
+    # Your friend's Lex currently calls
+    # the location slot "city_man".
+    # Supporting City as well keeps LF2 flexible.
+    city = (
+        get_slot(
             slots,
             "City"
-        ),
+        )
+        or
+        get_slot(
+            slots,
+            "city_man"
+        )
+    )
+
+    request_data = {
+
+        "city": city,
 
         "cuisine": cuisine,
 
         "date": (
-            get_slot(slots, "Date")
+            get_slot(
+                slots,
+                "Date"
+            )
             or
-            get_slot(slots, "date")
+            get_slot(
+                slots,
+                "date"
+            )
         ),
 
         "time": get_slot(
@@ -580,7 +726,6 @@ def lambda_handler(event, context):
         )
     }
 
-
     print(
         "Parsed restaurant request:"
     )
@@ -592,7 +737,6 @@ def lambda_handler(event, context):
         )
     )
 
-
     # --------------------------------------------------------
     # 4. VALIDATE REQUEST
     # --------------------------------------------------------
@@ -600,29 +744,30 @@ def lambda_handler(event, context):
     if not cuisine:
 
         raise ValueError(
-            f"Unsupported cuisine: {raw_cuisine}. "
+            f"Unsupported cuisine: "
+            f"{raw_cuisine}. "
             "Supported cuisines are "
             "American, Italian, Japanese, "
             "Chinese, and Pizza."
         )
 
-
     if not request_data["email"]:
 
         raise ValueError(
-            "SQS request does not contain an email."
+            "SQS request does not "
+            "contain an email."
         )
-
 
     # --------------------------------------------------------
     # 5. QUERY OPENSEARCH
     # --------------------------------------------------------
 
-    restaurant_ids = get_restaurant_ids(
-        cuisine,
-        count=3
+    restaurant_ids = (
+        get_restaurant_ids(
+            cuisine,
+            count=3
+        )
     )
-
 
     # --------------------------------------------------------
     # 6. GET FULL RESTAURANTS FROM DYNAMODB
@@ -634,14 +779,12 @@ def lambda_handler(event, context):
         )
     )
 
-
     if len(restaurants) != 3:
 
         raise RuntimeError(
             "Could not retrieve all 3 "
             "restaurants from DynamoDB."
         )
-
 
     # --------------------------------------------------------
     # 7. SEND EMAIL USING SES
@@ -653,18 +796,49 @@ def lambda_handler(event, context):
         restaurants
     )
 
+    # --------------------------------------------------------
+    # 8. SAVE WHAT WAS ACTUALLY RECOMMENDED
+    #
+    # This is extra-credit state.
+    #
+    # We do this AFTER SES succeeds because these are the
+    # restaurants that were actually sent to the user.
+    # --------------------------------------------------------
+
+    state_saved = False
+
+    try:
+
+        save_user_state(
+            request_data,
+            restaurants
+        )
+
+        state_saved = True
+
+    except Exception as e:
+
+        # Extra-credit state should not cause the normal
+        # recommendation pipeline to send duplicate emails.
+        print(
+            "WARNING: Could not save "
+            "dining-user-state:"
+        )
+
+        print(
+            str(e)
+        )
 
     # --------------------------------------------------------
-    # 8. DELETE SQS MESSAGE ONLY AFTER SUCCESS
+    # 9. DELETE SQS MESSAGE AFTER EMAIL SUCCESS
     # --------------------------------------------------------
 
     delete_sqs_message(
         receipt_handle
     )
 
-
     # --------------------------------------------------------
-    # 9. SUCCESS
+    # 10. SUCCESS RESPONSE
     # --------------------------------------------------------
 
     restaurant_summary = []
@@ -672,22 +846,32 @@ def lambda_handler(event, context):
     for restaurant in restaurants:
 
         restaurant_summary.append({
-            "business_id": restaurant.get(
-                "business_id"
-            ),
-            "name": restaurant.get(
-                "name"
-            ),
-            "address": restaurant.get(
-                "address"
-            ),
-            "rating": str(
-                restaurant.get("rating")
-            )
+
+            "business_id":
+                restaurant.get(
+                    "business_id"
+                ),
+
+            "name":
+                restaurant.get(
+                    "name"
+                ),
+
+            "address":
+                restaurant.get(
+                    "address"
+                ),
+
+            "rating":
+                str(
+                    restaurant.get(
+                        "rating"
+                    )
+                )
         })
 
-
     return {
+
         "statusCode": 200,
 
         "message":
@@ -704,5 +888,8 @@ def lambda_handler(event, context):
             restaurant_summary,
 
         "sesMessageId":
-            ses_message_id
+            ses_message_id,
+
+        "stateSaved":
+            state_saved
     }
