@@ -2,7 +2,7 @@
 
 Cloud Computing and Big Data — Fall 2026  
 Dining Concierge chatbot project.
-![alt text](images\image.png)
+![alt text](/images/image.png)
 
 ## Final Restaurant Dataset
 
@@ -30,7 +30,7 @@ Each restaurant record contains:
 
 ## Extra Credit
 
-![image](<images\Screenshot 2026-09-29 190119.png>)
+![image](<images/Screenshot 2026-09-29 190119.png>)
 
 DynamoDB is used to maintain the user's previous search state. For each user, identified by their email, the application stores the previous search information, including location and cuisine, along with the recommendation returned by OpenSearch.
 
