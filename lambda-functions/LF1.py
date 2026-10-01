@@ -2,44 +2,49 @@ import json
 import boto3
 
 
-
-# Config
+# ============================================================
+# CONFIG
+# ============================================================
 
 REGION = "us-east-1"
 
 QUEUE_URL = (
-    "https://sqs.us-east-1.amazonaws.com/456157355328/food_info"
-)
-
-# Role that exists in Ramsey's AWS account.
-STATE_ROLE_ARN = (
-    "arn:aws:iam::180382394287:"
-    "role/lf1accesDB"
+    "https://sqs.us-east-1.amazonaws.com/"
+    "456157355328/food_info"
 )
 
 STATE_TABLE_NAME = "dining-user-state"
 
-SES_FROM_EMAIL = "0monsuno82@gmail.com"
+SES_FROM_EMAIL = "av4008@nyu.edu"
 
 
-
-# AWS clients in Ramsey's account
-
+# ============================================================
+# AWS CLIENTS
+# ============================================================
 
 sqs = boto3.client(
     "sqs",
     region_name=REGION
 )
 
-sts = boto3.client(
-    "sts",
+dynamodb = boto3.resource(
+    "dynamodb",
+    region_name=REGION
+)
+
+state_table = dynamodb.Table(
+    STATE_TABLE_NAME
+)
+
+ses = boto3.client(
+    "ses",
     region_name=REGION
 )
 
 
-
-# Helper: get Lex slot value
-
+# ============================================================
+# HELPER: GET LEX SLOT VALUE
+# ============================================================
 
 def get_slot_value(slots, slot_name):
 
@@ -59,9 +64,9 @@ def get_slot_value(slots, slot_name):
     )
 
 
-
-# Helper: normalize strings for comparison
-
+# ============================================================
+# HELPER: NORMALIZE
+# ============================================================
 
 def normalize(value):
 
@@ -71,52 +76,44 @@ def normalize(value):
     return str(value).strip().lower()
 
 
+# ============================================================
+# HELPER: CLOSE LEX INTENT
+# ============================================================
 
-# Assume role in Ramsey's account
+def close_intent(
+    intent,
+    slots,
+    message
+):
 
-def get_ramsey_aws_resources():
+    return {
+        "sessionState": {
 
-    print("Assuming role in recommendation AWS account...")
+            "dialogAction": {
+                "type": "Close"
+            },
 
-    response = sts.assume_role(
-        RoleArn=STATE_ROLE_ARN,
-        RoleSessionName="LF1DiningStateSession"
-    )
+            "intent": {
+                "name": intent,
+                "slots": slots,
+                "state": "Fulfilled"
+            }
+        },
 
-    credentials = response["Credentials"]
-
-    boto_args = {
-        "aws_access_key_id": credentials["AccessKeyId"],
-        "aws_secret_access_key": credentials["SecretAccessKey"],
-        "aws_session_token": credentials["SessionToken"],
-        "region_name": REGION
+        "messages": [
+            {
+                "contentType": "PlainText",
+                "content": message
+            }
+        ]
     }
 
-    # DynamoDB in Ramsey's account
-    ramsey_dynamodb = boto3.resource(
-        "dynamodb",
-        **boto_args
-    )
 
-    state_table = ramsey_dynamodb.Table(
-        STATE_TABLE_NAME
-    )
-
-    # SES in Ramsey's account
-    ramsey_ses = boto3.client(
-        "ses",
-        **boto_args
-    )
-
-    return state_table, ramsey_ses
-
-
-# 
-# Helper: send previous recommendation email
-# 
+# ============================================================
+# HELPER: SEND PREVIOUS RECOMMENDATIONS BY EMAIL
+# ============================================================
 
 def send_previous_recommendation_email(
-    ses,
     email,
     cuisine,
     date,
@@ -129,12 +126,14 @@ def send_previous_recommendation_email(
 
     lines.append("Hello!")
     lines.append("")
+
     lines.append(
         f"Here are the same {cuisine} restaurant "
         f"suggestions from your previous search."
     )
 
     if date or time or number_people:
+
         lines.append("")
 
         dining_info = "For"
@@ -202,6 +201,7 @@ def send_previous_recommendation_email(
     body = "\n".join(lines)
 
     response = ses.send_email(
+
         Source=SES_FROM_EMAIL,
 
         Destination={
@@ -211,6 +211,7 @@ def send_previous_recommendation_email(
         },
 
         Message={
+
             "Subject": {
                 "Data": (
                     f"Your {cuisine} Restaurant Suggestions"
@@ -218,54 +219,26 @@ def send_previous_recommendation_email(
             },
 
             "Body": {
+
                 "Text": {
                     "Data": body
                 }
+
             }
         }
     )
 
     print(
         "Previous recommendation SES Message ID:",
-        response["MessageId"]
+        response.get("MessageId")
     )
 
     return response
 
 
-# Helper: close Lex conversation
-
-
-def close_intent(
-    intent,
-    slots,
-    message
-):
-
-    return {
-        "sessionState": {
-            "dialogAction": {
-                "type": "Close"
-            },
-
-            "intent": {
-                "name": intent,
-                "slots": slots,
-                "state": "Fulfilled"
-            }
-        },
-
-        "messages": [
-            {
-                "contentType": "PlainText",
-                "content": message
-            }
-        ]
-    }
-
-
-
-# Lambda handler
+# ============================================================
+# LAMBDA HANDLER
+# ============================================================
 
 def lambda_handler(event, context):
 
@@ -276,21 +249,58 @@ def lambda_handler(event, context):
         event.get("invocationSource")
     )
 
-    intent_data = event[
-        "sessionState"
-    ]["intent"]
+    # --------------------------------------------------------
+    # Get intent
+    # --------------------------------------------------------
+
+    intent_data = (
+        event
+        .get("sessionState", {})
+        .get("intent", {})
+    )
+
+    intent = intent_data.get(
+        "name"
+    )
 
     slots = intent_data.get(
         "slots",
         {}
     )
 
-    intent = intent_data["name"]
-
     print("Intent:", intent)
     print("Slots:", slots)
 
-    # Get normal dining values
+
+    # ========================================================
+    # GREET
+    # ========================================================
+
+    if intent == "Greet":
+
+        return close_intent(
+            intent,
+            slots,
+            "Hello, can I help you find restaurants?"
+        )
+
+
+    # ========================================================
+    # THANK
+    # ========================================================
+
+    if intent == "Thank":
+
+        return close_intent(
+            intent,
+            slots,
+            "You're welcome!"
+        )
+
+
+    # ========================================================
+    # GET DINING SLOTS
+    # ========================================================
 
     email = get_slot_value(
         slots,
@@ -299,17 +309,17 @@ def lambda_handler(event, context):
 
     location = get_slot_value(
         slots,
-        "city_man"
+        "Location"
     )
 
     cuisine = get_slot_value(
         slots,
-        "Cusine"
+        "Cussine"
     )
 
     date = get_slot_value(
         slots,
-        "date"
+        "Date"
     )
 
     dining_time = get_slot_value(
@@ -319,7 +329,7 @@ def lambda_handler(event, context):
 
     number_people = get_slot_value(
         slots,
-        "Number_people"
+        "people_count"
     )
 
     use_previous = get_slot_value(
@@ -337,26 +347,133 @@ def lambda_handler(event, context):
     print("Use previous:", use_previous)
 
 
-    # 
-    # Check whether normal search slots are complete
-    # 
+    # ========================================================
+    # VALIDATE LOCATION
+    # ========================================================
+
+    if location is not None:
+
+        normalized_location = normalize(
+            location
+        )
+
+        if normalized_location != "manhattan":
+
+            print(
+                "Invalid location:",
+                location
+            )
+
+            return {
+                "sessionState": {
+
+                    "dialogAction": {
+                        "type": "ElicitSlot",
+                        "slotToElicit": "Location"
+                    },
+
+                    "intent": {
+                        "name": intent,
+                        "slots": slots
+                    }
+                },
+
+                "messages": [
+                    {
+                        "contentType": "PlainText",
+                        "content": (
+                            "Sorry, I can't help with dining "
+                            f"recommendations in {location}. "
+                            "Please try Manhattan."
+                        )
+                    }
+                ]
+            }
+
+
+    # ========================================================
+    # VALIDATE CUISINE
+    # ========================================================
+
+    allowed_cuisines = {
+        "american",
+        "italian",
+        "japanese",
+        "chinese",
+        "pizza"
+    }
+
+    if cuisine is not None:
+
+        normalized_cuisine = normalize(
+            cuisine
+        )
+
+        if normalized_cuisine not in allowed_cuisines:
+
+            print(
+                "Invalid cuisine:",
+                cuisine
+            )
+
+            return {
+                "sessionState": {
+
+                    "dialogAction": {
+                        "type": "ElicitSlot",
+                        "slotToElicit": "Cussine"
+                    },
+
+                    "intent": {
+                        "name": intent,
+                        "slots": slots
+                    }
+                },
+
+                "messages": [
+                    {
+                        "contentType": "PlainText",
+                        "content": (
+                            "Sorry, I don't have "
+                            f"{cuisine} recommendations. "
+                            "Please choose American, Italian, "
+                            "Japanese, Chinese, or pizza."
+                        )
+                    }
+                ]
+            }
+
+
+    # ========================================================
+    # CHECK REQUIRED SEARCH SLOTS
+    # ========================================================
 
     required_slots = [
-        "date",
+
         "Email",
-        "Cusine",
-        "Number_people",
+
+        "Location",
+
+        "Cussine",
+
+        "Date",
+
         "Time",
-        "city_man"
+
+        "people_count"
     ]
 
+
     all_search_slots_collected = all(
+
         get_slot_value(
             slots,
             slot_name
         ) is not None
+
         for slot_name in required_slots
     )
+
 
     print(
         "All search slots collected:",
@@ -364,9 +481,9 @@ def lambda_handler(event, context):
     )
 
 
-    # 
-    # Lex still needs to collect normal search information
-    # 
+    # ========================================================
+    # LEX STILL COLLECTING INFORMATION
+    # ========================================================
 
     if not all_search_slots_collected:
 
@@ -376,6 +493,7 @@ def lambda_handler(event, context):
 
         return {
             "sessionState": {
+
                 "dialogAction": {
                     "type": "Delegate"
                 },
@@ -388,33 +506,84 @@ def lambda_handler(event, context):
         }
 
 
-    # 
-    # All normal slots exist.
-    # Access Ramsey's DynamoDB + SES.
-    # 
 
-    state_table, ramsey_ses = (
-        get_ramsey_aws_resources()
+    normalized_email = normalize(
+        email
     )
-
-
-    # 
-    # Look up user's previous recommendation
-    # 
 
     print(
-        "Checking dining-user-state..."
+        "Checking DynamoDB..."
     )
 
-    result = state_table.get_item(
-        Key={
-            "email": email.strip().lower()
-        }
+    print(
+        "Table:",
+        STATE_TABLE_NAME
     )
+
+    print(
+        "Region:",
+        REGION
+    )
+
+    print(
+        "Email key:",
+        normalized_email
+    )
+
+
+    # --------------------------------------------------------
+    # DynamoDB lookup
+    # --------------------------------------------------------
+
+    try:
+
+        result = state_table.get_item(
+
+            Key={
+                "email": normalized_email
+            }
+        )
+
+        print(
+            "DynamoDB response:",
+            result
+        )
+
+    except Exception as e:
+
+        print(
+            "========== DYNAMODB ERROR =========="
+        )
+
+        print(
+            "Error type:",
+            type(e).__name__
+        )
+
+        print(
+            "Error:",
+            str(e)
+        )
+
+        print(
+            "===================================="
+        )
+
+        return close_intent(
+            intent,
+            slots,
+            (
+                "Sorry, I couldn't access your "
+                "previous restaurant recommendations. "
+                "Please try again."
+            )
+        )
+
 
     previous_search = result.get(
         "Item"
     )
+
 
     print(
         "Previous search:",
@@ -422,9 +591,20 @@ def lambda_handler(event, context):
     )
 
 
-    # Previous state exists 
 
-    if previous_search:
+    if not previous_search:
+
+        print(
+            "No previous search found."
+        )
+
+        print(
+            "Sending new request directly to SQS."
+        )
+
+
+
+    else:
 
         previous_location = (
             previous_search.get(
@@ -446,19 +626,6 @@ def lambda_handler(event, context):
         )
 
 
-        same_search = (
-            normalize(previous_location)
-            ==
-            normalize(location)
-
-            and
-
-            normalize(previous_cuisine)
-            ==
-            normalize(cuisine)
-        )
-
-
         print(
             "Previous location:",
             previous_location
@@ -470,21 +637,56 @@ def lambda_handler(event, context):
         )
 
         print(
+            "Previous recommendations:",
+            previous_recommendations
+        )
+
+
+        # ----------------------------------------------------
+        # Compare current search with previous search
+        # ----------------------------------------------------
+
+        same_search = (
+
+            normalize(
+                previous_location
+            )
+            ==
+            normalize(
+                location
+            )
+
+            and
+
+            normalize(
+                previous_cuisine
+            )
+            ==
+            normalize(
+                cuisine
+            )
+        )
+
+
+        print(
             "Same search:",
             same_search
         )
 
 
-        # Same location + same cuisine
+        # ====================================================
+        # SAME LOCATION + SAME CUISINE
+        # ====================================================
 
         if (
             same_search
             and previous_recommendations
         ):
 
-            # 
-            # We have not asked Yes/No yet
-            # 
+
+            # ------------------------------------------------
+            # We have NOT asked the user yet
+            # ------------------------------------------------
 
             if use_previous is None:
 
@@ -493,27 +695,37 @@ def lambda_handler(event, context):
                 )
 
                 print(
-                    "Asking whether to reuse recommendations."
+                    "Asking whether to reuse "
+                    "previous recommendations."
                 )
 
+
                 return {
+
                     "sessionState": {
 
                         "dialogAction": {
+
                             "type": "ElicitSlot",
+
                             "slotToElicit":
                                 "UsePreviousRecommendation"
                         },
 
                         "intent": {
+
                             "name": intent,
+
                             "slots": slots
                         }
                     },
 
                     "messages": [
+
                         {
-                            "contentType": "PlainText",
+                            "contentType":
+                                "PlainText",
+
                             "content": (
                                 "I found the same location "
                                 "and cuisine from your previous "
@@ -521,102 +733,189 @@ def lambda_handler(event, context):
                                 "recommendations as last time?"
                             )
                         }
+
                     ]
                 }
 
 
+            # ------------------------------------------------
+            # User answered YES
+            # ------------------------------------------------
+
             normalized_answer = normalize(
                 use_previous
             )
- 
-            # YES            
+
+
             if normalized_answer in [
+
                 "yes",
                 "yeah",
                 "yep",
                 "sure"
+
             ]:
 
                 print(
                     "User wants previous recommendations."
                 )
 
-                print(
-                    "Previous recommendations:",
-                    previous_recommendations
-                )
+
+                try:
+
+                    send_previous_recommendation_email(
+
+                        email=email,
+
+                        cuisine=cuisine,
+
+                        date=date,
+
+                        time=dining_time,
+
+                        number_people=number_people,
+
+                        restaurants=previous_recommendations
+                    )
 
 
-                # Send directly through Ramsey's SES
-                send_previous_recommendation_email(
-                    ses=ramsey_ses,
-                    email=email,
-                    cuisine=cuisine,
-                    date=date,
-                    time=dining_time,
-                    number_people=number_people,
-                    restaurants=previous_recommendations
-                )
+                except Exception as e:
+
+                    print(
+                        "========== SES ERROR =========="
+                    )
+
+                    print(
+                        "Error type:",
+                        type(e).__name__
+                    )
+
+                    print(
+                        "Error:",
+                        str(e)
+                    )
+
+                    print(
+                        "================================"
+                    )
+
+                    return close_intent(
+                        intent,
+                        slots,
+                        (
+                            "Sorry, I couldn't send "
+                            "your previous recommendations."
+                        )
+                    )
 
 
                 return close_intent(
+
                     intent,
+
                     slots,
+
                     (
                         "Sure! I sent your previous "
                         "restaurant recommendations "
                         "to your email."
                     )
                 )
- 
-            # NO
-            
+
+
+            # ------------------------------------------------
+            # User answered NO
+            # ------------------------------------------------
 
             if normalized_answer in [
+
                 "no",
                 "nope"
+
             ]:
 
                 print(
-                    "User wants new recommendations."
+                    "User wants NEW recommendations."
                 )
 
-
-    
-    # No previous recommendation, different search,or user answered NO.
-    # Send normal request to SQS.
-
+                # Continue below to SQS.
 
     message = {
+
         "intent": intent,
+
         "slots": slots
     }
 
+
     print(
-        "Message:",
-        message
+        "Sending message to SQS:"
     )
 
-    response = sqs.send_message(
-        QueueUrl=QUEUE_URL,
-        MessageBody=json.dumps(
-            message
+    print(
+        json.dumps(
+            message,
+            indent=2
         )
     )
 
-    print(
-        "SQS Message ID:",
-        response.get("MessageId")
-    )
+
+    try:
+
+        response = sqs.send_message(
+
+            QueueUrl=QUEUE_URL,
+
+            MessageBody=json.dumps(
+                message
+            )
+        )
 
 
-    # LF1 does NOT save the recommendation.
-    # LF2 chooses the actual restaurants and will save them into dining-user-state (Ramsey's account) after the recommendation email succeeds.
+        print(
+            "SQS Message ID:",
+            response.get(
+                "MessageId"
+            )
+        )
 
+
+    except Exception as e:
+
+        print(
+            "========== SQS ERROR =========="
+        )
+
+        print(
+            "Error type:",
+            type(e).__name__
+        )
+
+        print(
+            "Error:",
+            str(e)
+        )
+
+        print(
+            "================================"
+        )
+
+        return close_intent(
+            intent,
+            slots,
+            (
+                "Sorry, I couldn't submit "
+                "your restaurant request. "
+                "Please try again."
+            )
+        )
 
     return close_intent(
+
         intent,
+
         slots,
+
         (
             "Thanks! I am finding new restaurant "
             "recommendations and will email them to you."
