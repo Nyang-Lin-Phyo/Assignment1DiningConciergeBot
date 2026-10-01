@@ -635,8 +635,7 @@ Assignment1DiningConciergeBot/
 └── images/
     ├── image.png
     └── Screenshot 2026-09-29 190119.png
-
----
+```
 
 ## Summary
 
