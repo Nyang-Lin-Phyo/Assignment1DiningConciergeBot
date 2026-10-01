@@ -1,6 +1,11 @@
 # Assignment 1 Dining Concierge Bot
-Nyang Lin Phyo nl2993
+Nyang Lin Phyo nl2993  
+
 Aravindan Vemula av4008
+
+## Demo Video
+
+[Watch the project demo on YouTube](https://youtu.be/RwNpmjzn6cs)
 
 **Cloud Computing and Big Data — Fall 2026**
 
