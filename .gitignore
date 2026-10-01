@@ -15,6 +15,7 @@ __pycache__/
 *.pfx
 aws_credentials
 credentials
+tree.txt
 
 # IDE / editor
 .vscode/
