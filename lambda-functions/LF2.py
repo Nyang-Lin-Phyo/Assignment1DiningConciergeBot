@@ -1,18 +1,18 @@
-import boto3
 import json
 import os
 import random
 import urllib.request
-
-from datetime import datetime, timezone
 from urllib.error import HTTPError
+from datetime import datetime, timezone
+
+import boto3
 
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
 
 # ============================================================
-# CONFIG
+# CONFIGURATION
 # ============================================================
 
 REGION = "us-east-1"
@@ -22,7 +22,7 @@ QUEUE_URL = os.environ.get(
     "https://sqs.us-east-1.amazonaws.com/456157355328/food_info"
 )
 
-TABLE_NAME = os.environ.get(
+RESTAURANTS_TABLE = os.environ.get(
     "RESTAURANTS_TABLE",
     "yelp-restaurants"
 )
@@ -33,7 +33,8 @@ STATE_TABLE_NAME = os.environ.get(
 )
 
 SES_FROM_EMAIL = os.environ.get(
-    "SES_FROM_EMAIL"
+    "SES_FROM_EMAIL",
+    "nl2993@nyu.edu"
 )
 
 OPENSEARCH_ENDPOINT = os.environ.get(
@@ -55,10 +56,10 @@ dynamodb = boto3.resource(
     region_name=REGION
 )
 
-# Main restaurant table
-table = dynamodb.Table(TABLE_NAME)
+restaurants_table = dynamodb.Table(
+    RESTAURANTS_TABLE
+)
 
-# Extra-credit user state table
 state_table = dynamodb.Table(
     STATE_TABLE_NAME
 )
@@ -70,25 +71,6 @@ ses = boto3.client(
 
 
 # ============================================================
-# SLOT HELPER
-# ============================================================
-
-def get_slot(slots, name):
-
-    slot = slots.get(name)
-
-    if not slot:
-        return None
-
-    value = slot.get("value", {})
-
-    return (
-        value.get("interpretedValue")
-        or value.get("originalValue")
-    )
-
-
-# ============================================================
 # CUISINE NORMALIZATION
 # ============================================================
 
@@ -97,7 +79,7 @@ def normalize_cuisine(cuisine):
     if not cuisine:
         return None
 
-    cuisine = cuisine.strip().lower()
+    value = str(cuisine).strip().lower()
 
     mapping = {
         "american": "American",
@@ -107,7 +89,19 @@ def normalize_cuisine(cuisine):
         "pizza": "Pizza"
     }
 
-    return mapping.get(cuisine)
+    return mapping.get(value)
+
+
+# ============================================================
+# NORMALIZE TEXT
+# ============================================================
+
+def normalize_text(value):
+
+    if value is None:
+        return ""
+
+    return str(value).strip().lower()
 
 
 # ============================================================
@@ -118,8 +112,7 @@ def opensearch_request(method, path, body=None):
 
     if not OPENSEARCH_ENDPOINT:
         raise RuntimeError(
-            "OPENSEARCH_ENDPOINT environment variable "
-            "is not configured."
+            "OPENSEARCH_ENDPOINT environment variable is not configured."
         )
 
     endpoint = OPENSEARCH_ENDPOINT.rstrip("/")
@@ -134,8 +127,6 @@ def opensearch_request(method, path, body=None):
     if body is not None:
         data = json.dumps(body).encode("utf-8")
 
-    # Lambda automatically gets credentials from
-    # its execution role.
     credentials = (
         boto3.Session()
         .get_credentials()
@@ -172,40 +163,42 @@ def opensearch_request(method, path, body=None):
         ) as response:
 
             response_body = (
-                response.read().decode("utf-8")
+                response
+                .read()
+                .decode("utf-8")
             )
 
             if not response_body:
                 return {}
 
-            return json.loads(
-                response_body
-            )
+            return json.loads(response_body)
 
-    except HTTPError as e:
+    except HTTPError as error:
 
         error_body = (
-            e.read().decode("utf-8")
+            error
+            .read()
+            .decode("utf-8")
         )
 
-        print("OpenSearch HTTP error:")
+        print(
+            "OpenSearch HTTP error:",
+            error.code
+        )
+
         print(error_body)
 
         raise
 
 
 # ============================================================
-# GET RESTAURANTS FROM OPENSEARCH
+# GET RESTAURANT IDS FROM OPENSEARCH
 # ============================================================
 
-def get_restaurant_ids(
-    cuisine,
-    count=3
-):
+def get_restaurant_ids(cuisine, count=3):
 
     print(
-        f"Searching OpenSearch for cuisine: "
-        f"{cuisine}"
+        f"Searching OpenSearch for cuisine: {cuisine}"
     )
 
     search_body = {
@@ -247,7 +240,6 @@ def get_restaurant_ids(
         )
 
         if restaurant_id:
-
             restaurant_ids.append(
                 str(restaurant_id)
             )
@@ -279,7 +271,7 @@ def get_restaurant_ids(
 
 
 # ============================================================
-# GET FULL DATA FROM DYNAMODB
+# GET FULL RESTAURANTS FROM DYNAMODB
 # ============================================================
 
 def get_restaurants_from_dynamodb(
@@ -290,15 +282,13 @@ def get_restaurants_from_dynamodb(
 
     for restaurant_id in restaurant_ids:
 
-        response = table.get_item(
+        response = restaurants_table.get_item(
             Key={
                 "business_id": restaurant_id
             }
         )
 
-        item = response.get(
-            "Item"
-        )
+        item = response.get("Item")
 
         if item:
             restaurants.append(item)
@@ -312,7 +302,7 @@ def get_restaurants_from_dynamodb(
 
 
 # ============================================================
-# BUILD EMAIL
+# BUILD EMAIL BODY
 # ============================================================
 
 def build_email_body(
@@ -323,7 +313,7 @@ def build_email_body(
     cuisine = request_data["cuisine"]
     people = request_data["number_people"]
     date = request_data["date"]
-    time = request_data["time"]
+    dining_time = request_data["time"]
 
     lines = [
         "Hello!",
@@ -331,7 +321,7 @@ def build_email_body(
         (
             f"Here are my {cuisine} restaurant "
             f"suggestions for {people} people, "
-            f"for {date} at {time}:"
+            f"for {date} at {dining_time}:"
         ),
         ""
     ]
@@ -414,6 +404,7 @@ def send_email(
     )
 
     response = ses.send_email(
+
         Source=SES_FROM_EMAIL,
 
         Destination={
@@ -426,7 +417,6 @@ def send_email(
             "Subject": {
                 "Data": subject
             },
-
             "Body": {
                 "Text": {
                     "Data": body
@@ -444,7 +434,7 @@ def send_email(
 
 
 # ============================================================
-# SAVE USER'S LAST RECOMMENDATION
+# SAVE EXTRA-CREDIT USER STATE
 # ============================================================
 
 def save_user_state(
@@ -452,100 +442,64 @@ def save_user_state(
     restaurants
 ):
 
-    email = request_data["email"]
-
-    location = request_data.get(
-        "city"
+    email = normalize_text(
+        request_data.get("email")
     )
 
-    cuisine = request_data.get(
-        "cuisine"
+    location = normalize_text(
+        request_data.get("location")
     )
 
-    if not email:
-        raise ValueError(
-            "Cannot save user state without email."
-        )
+    cuisine = normalize_text(
+        request_data.get("cuisine")
+    )
 
-    saved_restaurants = []
+    recommendation_list = []
 
     for restaurant in restaurants:
 
-        saved_restaurants.append({
+        recommendation_list.append({
             "business_id": str(
                 restaurant.get(
                     "business_id",
                     ""
                 )
             ),
-
             "name": str(
                 restaurant.get(
                     "name",
                     ""
                 )
             ),
-
             "address": str(
                 restaurant.get(
                     "address",
                     ""
                 )
             ),
-
-            "rating": str(
-                restaurant.get(
-                    "rating",
-                    ""
-                )
+            "rating": restaurant.get(
+                "rating"
             ),
-
-            "reviews": str(
-                restaurant.get(
-                    "review_count",
-                    ""
-                )
+            "review_count": restaurant.get(
+                "review_count"
             )
         })
 
-    item = {
-        "email": email.strip().lower(),
-
-        "lastLocation": (
-            location.strip().lower()
-            if location
-            else ""
-        ),
-
-        "lastCuisine": (
-            cuisine.strip().lower()
-            if cuisine
-            else ""
-        ),
-
-        "lastRecommendations":
-            saved_restaurants,
-
-        "updatedAt":
-            datetime.now(
+    state_table.put_item(
+        Item={
+            "email": email,
+            "lastLocation": location,
+            "lastCuisine": cuisine,
+            "lastRecommendations": recommendation_list,
+            "updatedAt": datetime.now(
                 timezone.utc
             ).isoformat()
-    }
-
-    state_table.put_item(
-        Item=item
+        }
     )
 
     print(
-        "Saved user recommendation "
-        "to dining-user-state."
-    )
-
-    print(
-        json.dumps(
-            item,
-            indent=2
-        )
+        "Saved user recommendation to "
+        "dining-user-state."
     )
 
 
@@ -568,10 +522,110 @@ def delete_sqs_message(
 
 
 # ============================================================
+# VALIDATE / PARSE SQS REQUEST
+# ============================================================
+
+def parse_request(body):
+
+    print(
+        "Received raw SQS request:"
+    )
+
+    print(
+        json.dumps(
+            body,
+            indent=2
+        )
+    )
+
+    raw_cuisine = body.get(
+        "cuisine"
+    )
+
+    cuisine = normalize_cuisine(
+        raw_cuisine
+    )
+
+    request_data = {
+        "location": body.get(
+            "location"
+        ),
+        "cuisine": cuisine,
+        "date": body.get(
+            "date"
+        ),
+        "time": body.get(
+            "time"
+        ),
+        "number_people": body.get(
+            "number_people"
+        ),
+        "email": body.get(
+            "email"
+        )
+    }
+
+    print(
+        "Parsed restaurant request:"
+    )
+
+    print(
+        json.dumps(
+            request_data,
+            indent=2
+        )
+    )
+
+    if not request_data["location"]:
+
+        raise ValueError(
+            "SQS request does not contain location."
+        )
+
+    if not cuisine:
+
+        raise ValueError(
+            f"Unsupported cuisine: {raw_cuisine}. "
+            "Supported cuisines are American, "
+            "Italian, Japanese, Chinese, and Pizza."
+        )
+
+    if not request_data["date"]:
+
+        raise ValueError(
+            "SQS request does not contain date."
+        )
+
+    if not request_data["time"]:
+
+        raise ValueError(
+            "SQS request does not contain time."
+        )
+
+    if not request_data["number_people"]:
+
+        raise ValueError(
+            "SQS request does not contain number_people."
+        )
+
+    if not request_data["email"]:
+
+        raise ValueError(
+            "SQS request does not contain email."
+        )
+
+    return request_data
+
+
+# ============================================================
 # LAMBDA HANDLER
 # ============================================================
 
 def lambda_handler(event, context):
+
+    print(
+        "========== LF2 START =========="
+    )
 
     print(
         "Polling food_info SQS queue..."
@@ -601,8 +655,7 @@ def lambda_handler(event, context):
 
         return {
             "statusCode": 200,
-            "message":
-                "No SQS messages available"
+            "message": "No SQS messages available"
         }
 
     message = messages[0]
@@ -617,7 +670,7 @@ def lambda_handler(event, context):
     )
 
     # --------------------------------------------------------
-    # 2. PARSE MESSAGE BODY
+    # 2. PARSE JSON BODY
     # --------------------------------------------------------
 
     try:
@@ -634,143 +687,29 @@ def lambda_handler(event, context):
 
         raise
 
-    print(
-        "Received request:"
+    # --------------------------------------------------------
+    # 3. PARSE FLAT LF1 MESSAGE
+    # --------------------------------------------------------
+
+    request_data = parse_request(
+        body
     )
 
-    print(
-        json.dumps(
-            body,
-            indent=2
-        )
+    cuisine = request_data[
+        "cuisine"
+    ]
+
+    # --------------------------------------------------------
+    # 4. QUERY OPENSEARCH
+    # --------------------------------------------------------
+
+    restaurant_ids = get_restaurant_ids(
+        cuisine,
+        count=3
     )
 
     # --------------------------------------------------------
-    # 3. EXTRACT LEX SLOTS
-    # --------------------------------------------------------
-
-    slots = body.get(
-        "slots",
-        {}
-    )
-
-    raw_cuisine = (
-        get_slot(
-            slots,
-            "Cuisine"
-        )
-        or
-        get_slot(
-            slots,
-            "Cusine"
-        )
-    )
-
-    cuisine = normalize_cuisine(
-        raw_cuisine
-    )
-
-    # Your friend's Lex currently calls
-    # the location slot "city_man".
-    # Supporting City as well keeps LF2 flexible.
-    city = (
-        get_slot(
-            slots,
-            "City"
-        )
-        or
-        get_slot(
-            slots,
-            "city_man"
-        )
-    )
-
-    request_data = {
-
-        "city": city,
-
-        "cuisine": cuisine,
-
-        "date": (
-            get_slot(
-                slots,
-                "Date"
-            )
-            or
-            get_slot(
-                slots,
-                "date"
-            )
-        ),
-
-        "time": get_slot(
-            slots,
-            "Time"
-        ),
-
-        "number_people": (
-            get_slot(
-                slots,
-                "Number_people"
-            )
-            or
-            get_slot(
-                slots,
-                "NumberPeople"
-            )
-        ),
-
-        "email": get_slot(
-            slots,
-            "Email"
-        )
-    }
-
-    print(
-        "Parsed restaurant request:"
-    )
-
-    print(
-        json.dumps(
-            request_data,
-            indent=2
-        )
-    )
-
-    # --------------------------------------------------------
-    # 4. VALIDATE REQUEST
-    # --------------------------------------------------------
-
-    if not cuisine:
-
-        raise ValueError(
-            f"Unsupported cuisine: "
-            f"{raw_cuisine}. "
-            "Supported cuisines are "
-            "American, Italian, Japanese, "
-            "Chinese, and Pizza."
-        )
-
-    if not request_data["email"]:
-
-        raise ValueError(
-            "SQS request does not "
-            "contain an email."
-        )
-
-    # --------------------------------------------------------
-    # 5. QUERY OPENSEARCH
-    # --------------------------------------------------------
-
-    restaurant_ids = (
-        get_restaurant_ids(
-            cuisine,
-            count=3
-        )
-    )
-
-    # --------------------------------------------------------
-    # 6. GET FULL RESTAURANTS FROM DYNAMODB
+    # 5. GET RESTAURANT DETAILS FROM DYNAMODB
     # --------------------------------------------------------
 
     restaurants = (
@@ -787,7 +726,7 @@ def lambda_handler(event, context):
         )
 
     # --------------------------------------------------------
-    # 7. SEND EMAIL USING SES
+    # 6. SEND EMAIL
     # --------------------------------------------------------
 
     ses_message_id = send_email(
@@ -797,12 +736,7 @@ def lambda_handler(event, context):
     )
 
     # --------------------------------------------------------
-    # 8. SAVE WHAT WAS ACTUALLY RECOMMENDED
-    #
-    # This is extra-credit state.
-    #
-    # We do this AFTER SES succeeds because these are the
-    # restaurants that were actually sent to the user.
+    # 7. SAVE EXTRA-CREDIT STATE
     # --------------------------------------------------------
 
     state_saved = False
@@ -816,21 +750,21 @@ def lambda_handler(event, context):
 
         state_saved = True
 
-    except Exception as e:
+    except Exception as error:
 
-        # Extra-credit state should not cause the normal
-        # recommendation pipeline to send duplicate emails.
+        # The normal recommendation succeeded.
+        # Do not leave the SQS message around and cause
+        # duplicate emails just because state storage failed.
+
         print(
             "WARNING: Could not save "
-            "dining-user-state:"
+            "extra-credit user state:"
         )
 
-        print(
-            str(e)
-        )
+        print(str(error))
 
     # --------------------------------------------------------
-    # 9. DELETE SQS MESSAGE AFTER EMAIL SUCCESS
+    # 8. DELETE SQS MESSAGE
     # --------------------------------------------------------
 
     delete_sqs_message(
@@ -838,7 +772,7 @@ def lambda_handler(event, context):
     )
 
     # --------------------------------------------------------
-    # 10. SUCCESS RESPONSE
+    # 9. RESPONSE
     # --------------------------------------------------------
 
     restaurant_summary = []
@@ -846,50 +780,59 @@ def lambda_handler(event, context):
     for restaurant in restaurants:
 
         restaurant_summary.append({
-
-            "business_id":
+            "business_id": str(
                 restaurant.get(
-                    "business_id"
-                ),
-
-            "name":
-                restaurant.get(
-                    "name"
-                ),
-
-            "address":
-                restaurant.get(
-                    "address"
-                ),
-
-            "rating":
-                str(
-                    restaurant.get(
-                        "rating"
-                    )
+                    "business_id",
+                    ""
                 )
+            ),
+            "name": str(
+                restaurant.get(
+                    "name",
+                    ""
+                )
+            ),
+            "address": str(
+                restaurant.get(
+                    "address",
+                    ""
+                )
+            ),
+            "rating": str(
+                restaurant.get(
+                    "rating",
+                    ""
+                )
+            )
         })
 
-    return {
-
+    result = {
         "statusCode": 200,
-
-        "message":
+        "message": (
             "Restaurant recommendation "
-            "email sent successfully",
-
-        "email":
-            request_data["email"],
-
-        "cuisine":
-            cuisine,
-
-        "restaurants":
-            restaurant_summary,
-
-        "sesMessageId":
-            ses_message_id,
-
-        "stateSaved":
-            state_saved
+            "email sent successfully"
+        ),
+        "email": request_data["email"],
+        "location": request_data["location"],
+        "cuisine": cuisine,
+        "restaurants": restaurant_summary,
+        "sesMessageId": ses_message_id,
+        "stateSaved": state_saved
     }
+
+    print(
+        "LF2 completed successfully:"
+    )
+
+    print(
+        json.dumps(
+            result,
+            indent=2
+        )
+    )
+
+    print(
+        "========== LF2 END =========="
+    )
+
+    return result
